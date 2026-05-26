@@ -27,3 +27,32 @@ async def analyze_delay(
         max_days_stopped=payload.max_days_stopped, 
         token=token
     )
+
+@router.post(
+    "/analyze-delivered/{dhl_id}",
+    status_code=status.HTTP_200_OK
+)
+async def analyze_delivered(
+    dhl_id: str,
+    token: str = Depends(get_token_from_header),
+    risk_service: RiskService = Depends()
+):
+    return await risk_service.analyze_delivered_risk(
+        dhl_id=dhl_id,
+        token=token
+    )
+
+
+@router.post(
+    "/analyze-near-delivery/{dhl_id}",
+    status_code=status.HTTP_200_OK
+)
+async def analyze_near_delivery(
+    dhl_id: str,
+    token: str = Depends(get_token_from_header),
+    risk_service: RiskService = Depends()
+):
+    return await risk_service.analyze_near_delivery_risk(
+        dhl_id=dhl_id,
+        token=token
+    )

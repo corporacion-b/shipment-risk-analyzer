@@ -1,10 +1,23 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
+from src.api.routes import tracking
+from src.core.config import settings
+from src.db.connection import init_db
 
-from api.routes.tracking import router as risk_router
 
-app = FastAPI(
-    title="Shipment Risk Analyzer API",
-    version="1.0.0"
-)
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # init_db()
+    yield
 
-app.include_router(risk_router)
+
+src = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
+
+# Rutas
+src.include_router(tracking.router)
+
+@src.get("/", tags=["General"])
+async def health():
+    """Revisar estado de la API."""
+    return {"service": settings.PROJECT_NAME, "status": "online"}

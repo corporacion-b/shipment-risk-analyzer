@@ -1,219 +1,62 @@
-from datetime import datetime, timezone
-from fastapi import HTTPException
 from src.services.tracker_client import TrackerClient
 from src.repositories.alert_repository import AlertRepository
-from src.db.connection import database
-from src.schemas.tracking import ShipmentAlertResponse
+from src.schemas.tracking import AlertEvaluationRequest
 
 class RiskService:
     def __init__(self):
         self.tracker_client = TrackerClient()
         self.alert_repo = AlertRepository()
 
-    async def analyze_delay_risk(self, dhl_id: str, max_days_stopped: int, token: str) -> dict:
-        # Consultar los datos físicos viejos en la tabla vecina ANTES de llamar al Tracker
-        query = """
-            SELECT id_shipment, current_location, updated_at 
-            FROM shipments.shipments 
-            WHERE dhl_id = %s
-        """
-        
-        db_data = None
-        with database.connect() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(query, (dhl_id,))
-                db_data = cursor.fetchone()
+    async def evaluate_shipment_update(self, payload: AlertEvaluationRequest, token: str) -> dict:
+        current_user = await self.tracker_client.fetch_current_user(token)
+        alerts = []
 
-        if not db_data:
-            raise HTTPException(status_code=404, detail="Paquete no encontrado en los registros físicos de la BD.")
+        previous_status = self._normalize_text(payload.previous_status)
+        current_status = self._normalize_text(payload.current_status)
+        status_changed = bool(previous_status) and previous_status != current_status
+        should_create_status_alert = status_changed or self._is_notifiable_status(current_status)
 
-        id_shipment = db_data["id_shipment"]
-        current_location = db_data["current_location"]
-        updated_at = db_data["updated_at"] 
-
-        if not current_location:
-            raise HTTPException(status_code=400, detail="El paquete no tiene una ubicación actual asignada.")
-
-        # Calcular los días transcurridos usando la fecha previa al guardado
-        if updated_at.tzinfo is not None:
-            updated_at = updated_at.replace(tzinfo=None)
-            
-        now = datetime.now()
-        days_stopped = abs((now - updated_at).days)
-
-        # Validar con la Tracker API para actualizar el estado del paquete en el ecosistema
-        tracker_data = await self.tracker_client.fetch_shipment(dhl_id, token)
-        current_status = tracker_data.get("status")
-
-        # Evaluar condición de riesgo con los días reales acumulados
-        if days_stopped >= max_days_stopped and current_status.upper() != "DELIVERED":
-            alert_type = "DELAYED_IN_LOCATION"
-            description = f"El paquete {dhl_id} lleva {days_stopped} días detenido en la ubicación ID {current_location}."
-            
-            self.alert_repo.create_alert(
+        if should_create_status_alert:
+            alert_type, description = self._status_alert(payload.dhl_id, payload.previous_status, payload.current_status)
+            alert = self._create_internal_alert(
                 alert_type=alert_type,
                 description=description,
-                id_shipment=id_shipment,
-                current_location=current_location,
-                status="SENT"
+                dhl_id=payload.dhl_id,
+                id_shipment=payload.id_shipment,
+                current_location=payload.current_location,
+                current_user=current_user,
+                trigger_status=payload.current_status,
+                previous_status=payload.previous_status,
             )
+            if alert is not None:
+                alerts.append(alert)
 
-            return {
-                "alert_generated": True,
-                "days_stopped": days_stopped,
-                "message": "Alerta generada con éxito en el analizador de riesgos.",
-                "detail": description
-            }
+        if (
+            payload.dwell_time_days is not None
+            and payload.dwell_time_days >= payload.max_days_stopped
+            and current_status != "delivered"
+        ):
+            description = (
+                f"El paquete {payload.dhl_id} lleva {payload.dwell_time_days:.2f} dias "
+                "sin avanzar desde su ubicacion actual."
+            )
+            alert = self._create_internal_alert(
+                alert_type="DELAYED_IN_LOCATION",
+                description=description,
+                dhl_id=payload.dhl_id,
+                id_shipment=payload.id_shipment,
+                current_location=payload.current_location,
+                current_user=current_user,
+                trigger_status="DELAYED_IN_LOCATION",
+                previous_status=payload.previous_status,
+            )
+            if alert is not None:
+                alerts.append(alert)
 
         return {
-            "alert_generated": False,
-            "days_stopped": days_stopped,
-            "message": f"El paquete opera dentro de los parámetros normales ({days_stopped} días)."
+            "alerts_created": len(alerts),
+            "alerts": alerts,
         }
-    async def analyze_delivered_risk(self, dhl_id: str, token: str) -> ShipmentAlertResponse:
-        query = """
-            SELECT id_shipment, current_location, updated_at 
-            FROM shipments.shipments 
-            WHERE dhl_id = %s
-        """
-
-        with database.connect() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(query, (dhl_id,))
-                db_data = cursor.fetchone()
-
-        if not db_data:
-            raise HTTPException(
-                status_code=404,
-                detail="Paquete no encontrado en los registros físicos de la BD."
-            )
-
-        id_shipment = db_data["id_shipment"]
-        current_location = db_data["current_location"]
-
-        if not current_location:
-            raise HTTPException(
-                status_code=400,
-                detail="El paquete no tiene una ubicación actual asignada."
-            )
-
-        tracker_data = await self.tracker_client.fetch_shipment(dhl_id, token)
-
-        status = self._normalize_text(tracker_data.get("status"))
-        description_text = self._normalize_text(tracker_data.get("description"))
-
-        delivered_keywords = [
-            "delivered",
-            "entregado",
-            "entregada",
-            "shipment has been delivered",
-            "delivery completed",
-            "completed",
-        ]
-
-        is_delivered = self._contains_any(status, delivered_keywords) or self._contains_any(
-            description_text,
-            delivered_keywords
-        )
-
-        if is_delivered:
-            alert_type = "DELIVERED"
-            description = f"El paquete {dhl_id} ya fue entregado."
-
-            self.alert_repo.create_alert(
-                alert_type=alert_type,
-                description=description,
-                id_shipment=id_shipment,
-                current_location=current_location,
-                status="SENT"
-            )
-
-            return ShipmentAlertResponse(
-                alert_generated=True,
-                message="Alerta de entrega generada con éxito.",
-                detail=description,
-                tracker_status=tracker_data.get("status")
-            )
-
-        return ShipmentAlertResponse(
-            alert_generated=False,
-            message="El paquete todavía no ha sido entregado.",
-            tracker_status=tracker_data.get("status")
-        )
-
-    async def analyze_near_delivery_risk(self, dhl_id: str, token: str) -> ShipmentAlertResponse:
-        query = """
-            SELECT id_shipment, current_location, updated_at 
-            FROM shipments.shipments 
-            WHERE dhl_id = %s
-        """
-
-        with database.connect() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(query, (dhl_id,))
-                db_data = cursor.fetchone()
-
-        if not db_data:
-            raise HTTPException(
-                status_code=404,
-                detail="Paquete no encontrado en los registros físicos de la BD."
-            )
-
-        id_shipment = db_data["id_shipment"]
-        current_location = db_data["current_location"]
-
-        if not current_location:
-            raise HTTPException(
-                status_code=400,
-                detail="El paquete no tiene una ubicación actual asignada."
-            )
-
-        tracker_data = await self.tracker_client.fetch_shipment(dhl_id, token)
-
-        status = self._normalize_text(tracker_data.get("status"))
-        description_text = self._normalize_text(tracker_data.get("description"))
-
-        near_delivery_keywords = [
-            "out_for_delivery",
-            "out for delivery",
-            "por entregar",
-            "próximo a entregar",
-            "proximo a entregar",
-            "en reparto",
-            "ready for delivery",
-            "delivery soon",
-            "near delivery",
-        ]
-
-        is_near_delivery = self._contains_any(status, near_delivery_keywords) or self._contains_any(
-            description_text,
-            near_delivery_keywords
-        )
-
-        if is_near_delivery:
-            alert_type = "NEAR_DELIVERY"
-            description = f"El paquete {dhl_id} está próximo a entregarse."
-
-            self.alert_repo.create_alert(
-                alert_type=alert_type,
-                description=description,
-                id_shipment=id_shipment,
-                current_location=current_location,
-                status="SENT"
-            )
-
-            return ShipmentAlertResponse(
-                alert_generated=True,
-                message="Alerta de próxima entrega generada con éxito.",
-                detail=description,
-                tracker_status=tracker_data.get("status")
-            )
-
-        return ShipmentAlertResponse(
-            alert_generated=False,
-            message="El paquete no está próximo a entregarse.",
-            tracker_status=tracker_data.get("status")
-        )
 
     @staticmethod
     def _normalize_text(value) -> str:
@@ -222,6 +65,60 @@ class RiskService:
 
         return str(value).lower().strip()
 
-    @staticmethod
-    def _contains_any(text: str, keywords: list[str]) -> bool:
-        return any(keyword in text for keyword in keywords)
+    @classmethod
+    def _is_notifiable_status(cls, status: str) -> bool:
+        normalized_status = cls._normalize_text(status)
+        return (
+            "delivered" in normalized_status
+            or "out for delivery" in normalized_status
+            or "out_for_delivery" in normalized_status
+            or "exception" in normalized_status
+            or "hold" in normalized_status
+        )
+
+    @classmethod
+    def _status_alert(cls, dhl_id: str, previous_status: str | None, current_status: str) -> tuple[str, str]:
+        normalized_status = cls._normalize_text(current_status)
+
+        if "delivered" in normalized_status:
+            return "DELIVERED", f"El paquete {dhl_id} cambio de {previous_status} a entregado."
+
+        if "out for delivery" in normalized_status or "out_for_delivery" in normalized_status:
+            return "NEAR_DELIVERY", f"El paquete {dhl_id} salio a reparto."
+
+        if "exception" in normalized_status or "hold" in normalized_status:
+            return "SHIPMENT_EXCEPTION", f"El paquete {dhl_id} presenta una excepcion: {current_status}."
+
+        return "STATUS_CHANGED", f"El paquete {dhl_id} cambio de {previous_status} a {current_status}."
+
+    def _create_internal_alert(
+        self,
+        alert_type: str,
+        description: str,
+        dhl_id: str,
+        id_shipment: int,
+        current_location: int | None,
+        current_user: dict,
+        trigger_status: str | None,
+        previous_status: str | None,
+    ) -> dict | None:
+        if self.alert_repo.alert_exists(
+            id_user=current_user["id_user"],
+            dhl_id=dhl_id,
+            alert_type=alert_type,
+            trigger_status=trigger_status,
+        ):
+            return None
+
+        return self.alert_repo.create_alert(
+            alert_type=alert_type,
+            description=description,
+            dhl_id=dhl_id,
+            id_shipment=id_shipment,
+            current_location=current_location,
+            id_user=current_user["id_user"],
+            user_email=current_user["email"],
+            trigger_status=trigger_status,
+            previous_status=previous_status,
+            status="UNREAD",
+        )

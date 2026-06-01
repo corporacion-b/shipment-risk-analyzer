@@ -1,138 +1,59 @@
-#  shipment-risk-analyzer-api
+# shipment-risk-analyzer
 
-##  Descripción
+<p align="center">
+  API de análisis de riesgo en envíos construida con FastAPI.
+</p>
 
-API desarrollada con FastAPI que analiza riesgos en envíos a partir de datos obtenidos del shipment-tracker-api. Identifica posibles retrasos, retenciones aduanales o incidencias, y genera alertas basadas en reglas de negocio.
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/FastAPI-API-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Pytest-Tests-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white" alt="Pytest">
+  <img src="https://img.shields.io/badge/Docker-Containerized-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker">
+</p>
 
----
-
-##  Objetivo
-
-Su propósito es evaluar el riesgo de un envío usando eventos históricos y condiciones externas.
-
----
-
-##  Arquitectura del servicio
-
-
+Servicio de análisis de riesgo del sistema Shipment Tracker. Consulte [corporacion-b/.github](https://github.com/corporacion-b/.github) para la descripción completa del proyecto y las instrucciones de ejecución con Docker Compose.
 
 ---
 
-##  Stack tecnológico
+## Requisitos previos
 
-* Python
-* FastAPI
-* PyTest
-* MySQL
-* Alembic
-* Docker
-* GitHub Actions
+- Docker y Docker Compose
+- Los tres repositorios clonados en la carpeta raíz del proyecto (ver [corporacion-b/.github](https://github.com/corporacion-b/.github))
 
 ---
 
-##  Estructura del proyecto
+## Ejecución
 
-```
-shipment-risk-analyzer-api/
-├── .github/
-│   └── workflows/
-│       └── ci.yml
-├── src/                     
-├── tests/                   
-├── Dockerfile
-├── docker-compose.yml
-├── .env.example              
-├── .gitignore                
-├── README.md
-└── APRENDIZAJES.md
-```
+Este servicio se levanta junto con el resto del sistema desde la carpeta raíz del proyecto:
 
----
-
-##  Requisitos previos
-
-* Python 3.x
-* Docker
-* Acceso a shipment-tracker-api
-
----
-
-##  Variables de entorno
-
-
-
----
-
-##  Ejecución local
-
-```
-git clone https://github.com/corporacion-b/shipment-risk-analyzer.git
-cd shipment-risk-analyzer
-pip install -r requirements.txt
-uvicorn src.main:src --reload
-```
-
----
-
-##  Docker
-
-```
+```bash
+cp .env.example .env
 docker compose up --build
 ```
 
----
-
-##  Endpoints
-
-| Método | Endpoint                   | Descripción              |
-| ------ | -------------------------- | ------------------------ |
-| GET    | /risk/{id}/customs-hold    | Retención en aduana      |
-| GET    | /risk/{id}/delay-detection | Detección de retrasos    |
-| GET    | /risk/{id}/holiday-impact  | Impacto de días festivos |
+Las variables de entorno se configuran en el `.env` de la raíz. La API queda disponible en `http://localhost:8002`.
 
 ---
 
-##  Ejemplos de request/response
+## Endpoints
 
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| GET | `/tracking/alerts` | Lista notificaciones del usuario |
+| POST | `/tracking/evaluate` | Evalúa automáticamente un refresh de shipment |
+| PATCH | `/tracking/alerts/{alert_id}` | Actualiza el estado de una alerta |
+| POST | `/tracking/alerts/mark-read` | Marca alertas como leídas |
+| DELETE | `/tracking/alerts/{alert_id}` | Elimina una alerta |
+| DELETE | `/tracking/alerts/by-shipment/{tracking_id}` | Elimina todas las alertas de un envío |
 
-
----
-
-##  Documentación automática
-
-* Swagger UI: /docs
-* ReDoc: /redoc
-
----
-
-##  Pruebas
-
-
+Documentación automática: `http://localhost:8002/docs`
 
 ---
 
-##  CI/CD
+## Pruebas
 
+```bash
+pytest
+```
 
-
----
-
-##  Estrategia de ramas
-
-* main
-* develop
-* feature/*
-* fix/*
-
----
-
-##  Integrantes
-
-| Rol       | Nombre           |
-| --------- | ---------------- |
-| Tech Lead | Enrique Vidó     |
-| Backend   | Josué Rosaldo    |
-| QA/DevOps | Erick Rodríguez  |
-| Docs      | María Montserrat |
-
----
+Las pruebas que tocan base de datos requieren MySQL disponible.
